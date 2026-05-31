@@ -59,30 +59,30 @@ No manually prepared or edited data set is used.
 | # | Method | Applicable? | Note |
 |---|---|---|---|
 | 1 | Naïve Forecasting | Yes | Baseline benchmark |
-| 2 | Simple Moving Average (k = 3) | Yes | 3-month window to capture recent changes |
-| 3 | Weighted Moving Average (k = 3) | Yes | Weights 1/6, 2/6, 3/6 emphasise recent data |
-| 4 | Simple Exponential Smoothing | Yes | Level-only smoothing; no trend/seasonality |
-| 5 | Trend-Adjusted Exponential Smoothing | Yes | Captures the long-run trend |
+| 2 | Simple Moving Average (k = 3) | Yes | 3-month window |
+| 3 | Weighted Moving Average (k = 3) | Yes | Weights 1/6, 2/6, 3/6 |
+| 4 | Simple Exponential Smoothing | Yes | Level-only smoothing |
+| 5 | Trend-Adjusted Exponential Smoothing | Yes | Captures long-run trend |
 | 6 | Linear Trend Projection | Yes | OLS regression on time index |
 | 7 | Seasonal Indices | Yes | Monthly data with clear seasonal cycle |
 | 8 | Additive Decomposition | Yes | Trend + Seasonal + Random |
-| 9 | Multiplicative Decomposition | Yes | Trend × Seasonal × Random; seasonal amplitude grows with level |
-| 10 | Regression with Trend and Seasonal Dummies | Yes | Trend coefficient + 11 monthly dummies |
+| 9 | Multiplicative Decomposition | Yes | Trend × Seasonal × Random |
+| 10 | Regression with Trend and Seasonal Dummies | Yes | Trend + 11 monthly dummies |
 
 ## 7. Forecast Accuracy Comparison
 
 | Method | Bias | MAD | MSE | MAPE | RSFE | Tracking Signal | Next-Period Forecast |
 |---|---|---|---|---|---|---|---|
-| Naïve | 2,929,976 | 2,929,976 | 11,317,159 M | 65.56 % | 35,159,716 | 12.000 | 2,346,762 |
-| Moving Average (k = 3) | 2,450,516 | 2,450,516 | 8,737,427 M | 51.53 % | 29,406,192 | 12.000 | 3,302,850 |
-| Weighted MA (k = 3) | 2,646,659 | 2,646,659 | 9,737,201 M | 57.27 % | 31,759,906 | 12.000 | 2,911,723 |
-| Simple Exponential Smoothing | 2,929,959 | 2,929,959 | 11,317,058 M | 65.56 % | 35,159,508 | 12.000 | 2,346,796 |
-| Trend-Adjusted Exp. Smoothing | 5,563,065 | 5,563,065 | 37,058,801 M | 135.66 % | 66,756,782 | 12.000 | 2,369,445 |
-| Linear Trend Projection | 1,835,982 | 1,950,921 | 6,124,613 M | 39.49 % | 22,031,779 | 11.293 | 2,735,747 |
-| **Seasonal Indices** | **1,883,170** | **1,883,170** | **4,133,880 M** | **45.57 %** | **22,598,039** | **12.000** | **1,263,927** |
-| Additive Decomposition | 1,925,217 | 1,925,217 | 3,991,706 M | 49.61 % | 23,102,604 | 12.000 | 921,556 |
-| Multiplicative Decomposition | 1,929,244 | 1,929,244 | 4,317,115 M | 46.82 % | 23,150,926 | 12.000 | 1,136,624 |
-| Regression (Trend + Seasonal) | 1,891,462 | 1,891,462 | 3,876,480 M | 48.51 % | 22,697,544 | 12.000 | 1,156,619 |
+| Naïve | 2,355,260 | 2,395,244 | 9,480 B | 36.76 % | 28,263,124 | 11.800 | 2,973,142 |
+| Moving Average (k = 3) | 2,297,452 | 2,356,706 | 9,211 B | 36.19 % | 27,569,426 | 11.698 | 3,086,043 |
+| Weighted MA (k = 3) | 2,359,659 | 2,398,177 | 9,501 B | 36.81 % | 28,315,910 | 11.807 | 2,992,753 |
+| Simple Exponential Smoothing | 2,355,274 | 2,395,253 | 9,480 B | 36.76 % | 28,263,283 | 11.800 | 2,973,127 |
+| Trend-Adjusted Exp. Smoothing | 2,662,205 | 2,662,205 | 10,673 B | 42.93 % | 31,946,458 | 12.000 | 2,926,047 |
+| Linear Trend Projection | 967,374 | 1,830,242 | 4,949 B | 32.96 % | 11,608,485 | 6.343 | 4,687,517 |
+| **Seasonal Indices** | **756,267** | **1,719,001** | **3,989 B** | **32.26 %** | **9,075,202** | **5.279** | **3,045,719** |
+| Additive Decomposition | 1,028,474 | 1,785,974 | 4,256 B | 31.67 % | 12,341,682 | 6.910 | 3,298,375 |
+| Multiplicative Decomposition | 1,027,061 | 1,893,431 | 4,804 B | 34.74 % | 12,324,727 | 6.509 | 2,875,920 |
+| Regression (Trend + Seasonal) | 979,152 | 1,722,196 | 4,025 B | 30.40 % | 11,749,826 | 6.823 | 3,392,073 |
 
 The full accuracy comparison is saved at `outputs/tables/accuracy_comparison.csv`.
 
@@ -106,10 +106,10 @@ The full accuracy comparison is saved at `outputs/tables/accuracy_comparison.csv
 | Date of data access | 2026-05-31 |
 | Latest available TÜİK observation | March 2026 |
 | Forecast target period | April 2026 |
-| Forecasted visitors | see rendered notebook |
-| MAD | see rendered notebook |
-| MAPE | see rendered notebook |
-| Tracking Signal | see rendered notebook |
+| Forecasted visitors | 3,045,719 |
+| MAD | 1,719,001 |
+| MAPE | 32.26 % |
+| Tracking Signal | 5.279 |
 
 The full forecast result is saved at `outputs/tables/final_forecast.csv`.
 
