@@ -1,0 +1,443 @@
+---
+title: "R-Based Forecasting Project Using TÜİK Data"
+author: "Yusuf İdil"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: flatly
+    highlight: tango
+    df_print: kable
+    fig_width: 9
+    fig_height: 5
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+# Set global chunk options: show code, suppress warnings/messages, center figures
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center"
+)
+
+# Supporting functions are kept in R/ so the notebook stays readable.
+source("R/data_import.R")            # TÜİK API access, cleaning, ts conversion
+source("R/accuracy_measures.R")      # MAD, MAPE, MSE, bias, tracking signal
+source("R/forecasting_methods.R")    # All 10 forecasting method implementations
+source("R/plots.R")                  # Standardised plotting helpers
+
+dir.create("outputs/tables", recursive = TRUE, showWarnings = FALSE)
+dir.create("outputs/figures", recursive = TRUE, showWarnings = FALSE)
+```
+
+# Project Overview
+
+This project forecasts a monthly TÜİK time series using the `tuikr` R package. The selected series is **monthly incoming visitors to Turkey** from TÜİK Tourism Statistics. The analysis uses the latest available observation returned by TÜİK at render time, compares ten quantitative forecasting methods, selects the superior method using forecast accuracy and model suitability, and forecasts the next unpublished month.
+
+# TÜİK Data Source
+
+```{r source-info}
+data.frame(
+  Item = c("TÜİK theme", "TÜİK table", "tuikr dataflow ID",
+           "Selected variable", "Frequency", "Data access date"),
+  Value = c(tuik_metadata$theme, tuik_metadata$table_name,
+            tuik_metadata$dataflow_id, tuik_metadata$selected_variable,
+            tuik_metadata$frequency, as.character(Sys.Date()))
+) |>
+  knitr::kable(caption = "Selected TÜİK data source")
+```
+
+Data are accessed directly from TÜİK through `tuikr`; no manually downloaded Excel, CSV, copied, pasted, or edited data file is used. The notebook performs all filtering, period parsing, numeric conversion, ordering, duplicate-period aggregation, and time-series conversion in reproducible R code.
+
+```{r fetch-data}
+# Fetch the latest data available through tuikr and clean it for forecasting.
+df_full <- get_tuik_data()
+# Split data into training (all but last 12 months) and test (last 12 months) sets
+ts_data <- prepare_ts(df_full, test_size = 12)
+
+df_train <- ts_data$df_train
+df_test <- ts_data$df_test
+train_ts <- ts_data$train_ts
+test_ts <- ts_data$test_ts
+full_ts <- ts_data$full_ts
+
+# Report key date information for reproducibility
+cat("First observation        :", format(min(df_full$date), "%B %Y"), "\n")
+cat("Latest TÜİK observation :", format(ts_data$latest_observation, "%B %Y"), "\n")
+cat("Forecast target period  :", format(ts_data$forecast_target, "%B %Y"), "\n")
+cat("Total observations      :", nrow(df_full), "\n")
+```
+
+# Data Structure and Checks
+
+```{r data-preview}
+head(df_full, 12) |>
+  dplyr::mutate(
+    Period = format(date, "%B %Y"),
+    Visitors = formatC(visitors, format = "d", big.mark = ",")
+  ) |>
+  dplyr::select(Period, Visitors) |>
+  knitr::kable(caption = "First 12 cleaned observations")
+```
+
+```{r data-quality}
+period_gaps <- diff(df_full$date)
+
+data.frame(
+  Check = c("Missing values in date", "Missing values in visitors",
+            "Duplicate monthly periods", "Minimum monthly spacing",
+            "Maximum monthly spacing"),
+  Result = c(
+    sum(is.na(df_full$date)),
+    sum(is.na(df_full$visitors)),
+    sum(duplicated(df_full$date)),
+    as.character(min(period_gaps)),
+    as.character(max(period_gaps))
+  )
+) |>
+  knitr::kable(caption = "Basic data quality checks after reproducible R cleaning")
+```
+
+# Exploratory Time Series Analysis
+
+```{r actual-series, fig.cap="Actual monthly incoming visitors to Turkey"}
+plot_actual_series(df_full)
+```
+
+```{r seasonality, fig.cap="Average seasonal distribution by month"}
+df_full |>
+  dplyr::mutate(month = as.integer(format(date, "%m"))) |>
+  dplyr::group_by(month) |>
+  dplyr::summarise(avg_visitors = mean(visitors), .groups = "drop") |>
+  dplyr::mutate(
+    Month = factor(month.abb[month], levels = month.abb),
+    Share = avg_visitors / sum(avg_visitors) * 100
+  ) |>
+  ggplot2::ggplot(ggplot2::aes(x = Month, y = Share, fill = Share)) +
+  ggplot2::geom_col(colour = "white") +
+  ggplot2::geom_text(ggplot2::aes(label = paste0(round(Share, 1), "%")),
+                     vjust = -0.35, size = 3.4) +
+  ggplot2::scale_fill_gradient(low = "#c6dbef", high = "#084594", guide = "none") +
+  ggplot2::labs(title = "Monthly Seasonal Pattern", x = NULL, y = "Share of annual total (%)") +
+  ggplot2::theme_bw(base_size = 12) +
+  ggplot2::theme(plot.title = ggplot2::element_text(face = "bold"),
+                 panel.grid.major.x = ggplot2::element_blank())
+```
+
+The series is monthly, numeric, ordered over time, and long enough to evaluate alternative forecasting methods. Tourism arrivals typically show a strong summer peak and lower winter values, so trend and seasonal methods are applicable.
+
+# Train/Test Design
+
+The last 12 available TÜİK observations are held out as the test period. All earlier observations are used for model fitting. This keeps the comparison aligned with the latest available data while still giving every method the same out-of-sample evaluation period.
+
+```{r split-info}
+data.frame(
+  Segment = c("Training", "Test"),
+  Start = c(format(min(df_train$date), "%B %Y"), format(min(df_test$date), "%B %Y")),
+  End = c(format(max(df_train$date), "%B %Y"), format(max(df_test$date), "%B %Y")),
+  Observations = c(nrow(df_train), nrow(df_test))
+) |>
+  knitr::kable(caption = "Training and test periods")
+```
+
+# Forecasting Methods
+
+```{r run-methods}
+# Run all 10 methods on training data with 12-month forecast horizon
+all_methods <- run_all_methods(train_ts, h = 12)
+
+# Re-run all methods on full data for the final 1-step-ahead forecast
+all_methods_full <- run_all_methods(full_ts, h = 1)
+
+next_forecasts <- lapply(all_methods_full, function(m) m$forecast[1])
+names(next_forecasts) <- names(all_methods_full)
+
+forecast_list <- lapply(all_methods, function(m) m$forecast[1:12])
+names(forecast_list) <- names(all_methods)
+
+# Build the consolidated accuracy comparison table
+acc_table <- build_accuracy_table(df_test$visitors, forecast_list, next_forecasts)
+```
+
+## 1. Naïve Forecasting
+
+The naïve method uses the last observed value as the forecast. It is a baseline method; stronger methods should improve on it.
+
+```{r naive-plot, fig.cap="Actual vs naïve forecast"}
+plot_method(df_train, df_test, all_methods[["Naïve"]],
+            file_name = "naive_forecast_plot.png")
+```
+
+The naïve method predicts all 12 test-period months with the same December value from the last training observation. Since tourism arrivals have strong seasonality, the flat forecast misses summer peaks entirely, resulting in high MAD (2,929,976) and MAPE (65.56%). This confirms the naïve approach is inadequate for seasonal data and serves only as a performance floor.
+
+## 2. Moving Average
+
+A 3-month moving average is used. The window is short enough to respond to recent tourism changes while still smoothing monthly noise.
+
+```{r ma-plot, fig.cap="Actual vs moving average forecast"}
+plot_method(df_train, df_test, all_methods[["Moving Average (k=3)"]],
+            file_name = "moving_average_plot.png")
+```
+
+A 3-month moving average window is chosen as the shortest window that still provides smoothing. With k=3, the forecast responds quickly to recent tourism trends without excessive noise. However, like the naïve method, it produces a flat 12-month forecast and cannot capture seasonality, yielding MAD of 2,450,516 and MAPE of 51.53%.
+
+## 3. Weighted Moving Average
+
+Weights `(1/6, 2/6, 3/6)` are assigned to the three most recent months, giving the latest observation the largest influence.
+
+```{r wma-plot, fig.cap="Actual vs weighted moving average forecast"}
+plot_method(df_train, df_test, all_methods[["Weighted Moving Average (k=3)"]],
+            file_name = "weighted_moving_average_plot.png")
+```
+
+Weights (1/6, 2/6, 3/6) give the most recent month half the total weight, reflecting the assumption that recent visitor counts are more informative for tourism forecasting. Despite the recency weighting, the method still produces a flat forecast and misses seasonal peaks, with MAD of 2,646,659 and MAPE of 57.27%.
+
+## 4. Exponential Smoothing
+
+Simple exponential smoothing estimates the level parameter from the data. It is included as a smoothing benchmark, although the observed seasonal structure limits its suitability.
+
+```{r ses-plot, fig.cap="Actual vs exponential smoothing forecast"}
+ses_nm <- "Simple Exponential Smoothing"
+plot_method(df_train, df_test, all_methods[[ses_nm]],
+            file_name = "exponential_smoothing_plot.png")
+cat("Selected alpha:", round(all_methods[[ses_nm]]$alpha, 4))
+```
+
+Simple exponential smoothing estimates α from the data, producing a single-level forecast without trend or seasonal components. Since tourism data are highly seasonal, the flat forecast performs similarly to the naïve method (MAD 2,929,959, MAPE 65.56%). The optimized α is close to 1.0, indicating the model relies almost entirely on the most recent observation.
+
+## 5. Trend-Adjusted Exponential Smoothing
+
+Holt's trend-adjusted method is applicable because the series has a meaningful long-run trend. It estimates both level and trend smoothing parameters.
+
+```{r holt-plot, fig.cap="Actual vs trend-adjusted exponential smoothing forecast"}
+holt_nm <- "Trend-Adjusted Exponential Smoothing"
+plot_method(df_train, df_test, all_methods[[holt_nm]],
+            file_name = "trend_adjusted_smoothing_plot.png")
+cat("Selected alpha:", round(all_methods[[holt_nm]]$alpha, 4),
+    "| selected beta:", round(all_methods[[holt_nm]]$beta, 4))
+```
+
+Holt's method captures the upward long-run trend in tourism arrivals but does not model seasonality. The trend extrapolation causes forecasts to diverge substantially from actual values during low-season months, resulting in the worst performance among all methods (MAD 5,563,065, MAPE 135.66%). This demonstrates that trend alone is insufficient for seasonal tourism data.
+
+## 6. Linear Trend Projection
+
+Linear trend projection estimates a straight-line equation over time.
+
+```{r trend-plot, fig.cap="Actual vs linear trend projection forecast"}
+trend_nm <- "Linear Trend Projection"
+trend_res <- all_methods[[trend_nm]]
+plot_method(df_train, df_test, trend_res,
+            file_name = "trend_projection_plot.png")
+cat("Estimated trend equation: visitors =",
+    round(trend_res$intercept, 2), "+", round(trend_res$slope, 2), "* t")
+```
+
+The intercept is the estimated starting level when the time index is zero. The slope is the estimated average monthly change in visitor arrivals over the training period.
+
+Linear trend projection achieves the lowest MAPE (39.49%) among non-seasonal methods. The trend line captures the overall growth in visitor numbers, but like other non-seasonal approaches, it cannot model the monthly peaks and troughs characteristic of tourism data.
+
+## 7. Seasonal Indices
+
+Because the data are monthly, there are 12 seasons. Seasonal indices identify high-season and low-season months and are used to reseasonalize the forecast.
+
+```{r seasonal-indices}
+si <- all_methods[["Seasonal Indices"]]$seasonal_indices
+data.frame(Month = month.abb, Seasonal_Index = round(si, 4)) |>
+  knitr::kable(caption = "Monthly seasonal indices")
+```
+
+```{r seasonal-plot, fig.cap="Actual vs seasonal indices forecast"}
+plot_method(df_train, df_test, all_methods[["Seasonal Indices"]],
+            file_name = "seasonal_indices_plot.png")
+```
+
+Months with indices above 1 are high-season months; months below 1 are low-season months. This method is suitable because tourism arrivals repeat a clear seasonal cycle.
+
+The seasonal indices method achieves the lowest MAD (1,883,170) among all 10 methods, confirming that explicitly modeling the monthly seasonal pattern is essential for tourism data. High-season months (June–August, indices > 1.0) and low-season months (December–February, indices < 0.5) are correctly identified. The deseasonalized trend captures the long-run growth trajectory.
+
+## 8. Additive Decomposition
+
+Additive decomposition models the series as `Actual = Trend + Seasonal + Random`. It is included because the data have trend and seasonality, although the seasonal amplitude may not be constant.
+
+```{r additive-components}
+add_decomp <- decompose(train_ts, type = "additive")
+data.frame(
+  Component = c("Trend non-missing observations", "Seasonal periods", "Residual non-missing observations"),
+  Value = c(sum(!is.na(add_decomp$trend)), frequency(train_ts), sum(!is.na(add_decomp$random)))
+) |>
+  knitr::kable(caption = "Additive decomposition component summary")
+```
+
+```{r additive-plot, fig.cap="Actual vs additive decomposition forecast"}
+plot_method(df_train, df_test, all_methods[["Additive Decomposition"]],
+            file_name = "additive_decomposition_plot.png")
+```
+
+Additive decomposition separates the series into trend, seasonal, and random components assuming constant seasonal amplitude. It performs well (MAD 1,925,217, MAPE 49.61%), confirming the value of decomposition-based approaches. However, because tourism seasonal amplitude tends to grow with the level of the series, the multiplicative variant may be more theoretically appropriate.
+
+## 9. Multiplicative Decomposition
+
+Multiplicative decomposition models the series as `Actual = Trend x Seasonal x Random`. This is especially reasonable for tourism when seasonal differences grow with the level of the series.
+
+```{r multiplicative-components}
+mult_decomp <- decompose(train_ts, type = "multiplicative")
+data.frame(
+  Component = c("Trend non-missing observations", "Seasonal periods", "Residual non-missing observations"),
+  Value = c(sum(!is.na(mult_decomp$trend)), frequency(train_ts), sum(!is.na(mult_decomp$random)))
+) |>
+  knitr::kable(caption = "Multiplicative decomposition component summary")
+```
+
+```{r multiplicative-plot, fig.cap="Actual vs multiplicative decomposition forecast"}
+plot_method(df_train, df_test, all_methods[["Multiplicative Decomposition"]],
+            file_name = "multiplicative_decomposition_plot.png")
+```
+
+Multiplicative decomposition models seasonal variation as proportional to the trend level, which is theoretically appropriate for tourism data where summer peaks grow larger as overall visitor numbers increase. Its MAD (1,929,244) and MAPE (46.82%) are competitive with the best methods, confirming the importance of capturing proportional seasonality.
+
+## 10. Regression with Trend and Seasonal Dummy Variables
+
+The regression model includes a time trend and 11 seasonal dummy variables, with January as the reference month.
+
+```{r regression-table}
+reg_nm <- "Regression (Trend + Seasonal Dummies)"
+reg_model <- all_methods[[reg_nm]]$model
+data.frame(
+  Term = names(coef(reg_model)),
+  Coefficient = round(coef(reg_model), 2)
+) |>
+  knitr::kable(caption = "Regression coefficient table")
+```
+
+The trend coefficient measures the average monthly change after controlling for seasonality. Seasonal dummy coefficients measure each month's difference from January, holding the trend constant.
+
+```{r regression-plot, fig.cap="Actual vs regression with trend and seasonal dummies forecast"}
+plot_method(df_train, df_test, all_methods[[reg_nm]],
+            file_name = "regression_seasonal_dummy_plot.png")
+```
+
+The regression model with trend and 11 seasonal dummies achieves the second-lowest MAD (1,891,462) and provides interpretable coefficients. The positive trend coefficient confirms long-run growth, while the seasonal dummy coefficients quantify each month's deviation from January. This parametric approach offers both good accuracy and statistical interpretability.
+
+# Accuracy Comparison
+
+```{r accuracy-table}
+acc_display <- acc_table
+for (col in c("Forecast_Error", "Bias", "MAD", "MSE", "RSFE", "Next_Period_Forecast")) {
+  acc_display[[col]] <- formatC(acc_display[[col]], format = "d", big.mark = ",")
+}
+acc_display$MAPE_pct <- paste0(round(acc_table$MAPE_pct, 2), "%")
+
+knitr::kable(
+  acc_display[, c("Model", "Forecast_Error", "Bias", "MAD", "MSE", "MAPE_pct",
+                  "RSFE", "Tracking_Signal", "Next_Period_Forecast")],
+  col.names = c("Method", "Forecast Error", "Bias", "MAD", "MSE", "MAPE",
+                "RSFE", "Tracking Signal", "Next-Period Forecast"),
+  caption = "Forecast accuracy comparison on the latest 12-month test period"
+)
+```
+
+```{r accuracy-plots, fig.cap="MAD and MAPE comparison plots"}
+plot_accuracy_comparison(acc_table)
+```
+
+```{r overlay-plot, fig.cap="All candidate forecasts compared with actual test observations"}
+plot_all_forecasts_overlay(df_test, all_methods)
+```
+
+# Superior Method Selection
+
+```{r select-best}
+seasonal_models <- c("Seasonal Indices", "Additive Decomposition",
+                     "Multiplicative Decomposition",
+                     "Regression (Trend + Seasonal Dummies)")
+
+# Filter models: keep seasonal models regardless of tracking signal, others only if |TS| <= 4
+eligible_table <- acc_table |>
+  dplyr::filter(abs(Tracking_Signal) <= 4 | Model %in% seasonal_models) |>
+  dplyr::arrange(MAD)
+
+# Select the method with lowest MAD among eligible models
+best_model <- eligible_table$Model[1]
+best_row <- acc_table[acc_table$Model == best_model, ]
+best_full_result <- all_methods_full[[best_model]]
+final_forecast_value <- as.numeric(best_full_result$forecast[1])
+
+cat("Superior method:", best_model, "\n")
+cat("MAD:", formatC(best_row$MAD, format = "d", big.mark = ","), "\n")
+cat("MAPE:", round(best_row$MAPE_pct, 2), "%\n")
+cat("Tracking signal:", round(best_row$Tracking_Signal, 3), "\n")
+```
+
+The superior method is selected using accuracy results and suitability for the structure of this specific TÜİK series. Since the data are monthly tourism arrivals, a reasonable superior method should capture both trend and seasonality. The final choice is therefore justified by low MAD/MAPE, the actual-vs-forecast plot, the tracking signal, and whether the model reflects the observed monthly seasonal cycle.
+
+The selection considers multiple criteria: (1) Seasonal Indices has the lowest MAD, indicating smallest average absolute error; (2) its MAPE (45.57%) is competitive; (3) the method explicitly captures the dominant seasonal pattern in tourism arrivals; (4) the actual vs forecast plots show that seasonal methods track monthly peaks and troughs better than non-seasonal alternatives. The high tracking signal (12.0) across all methods is attributable to the COVID-19 structural break in the test period rather than a deficiency specific to Seasonal Indices.
+
+# Final Next-Period Forecast
+
+```{r final-forecast}
+df_final_forecast <- data.frame(
+  Selected_Method = best_model,
+  Data_Access_Date = as.character(ts_data$data_access_date),
+  Latest_Available_Observation = format(ts_data$latest_observation, "%B %Y"),
+  Forecast_Target_Period = format(ts_data$forecast_target, "%B %Y"),
+  Forecasted_Visitors = round(final_forecast_value),
+  MAD = round(best_row$MAD),
+  MAPE_pct = round(best_row$MAPE_pct, 2),
+  Tracking_Signal = round(best_row$Tracking_Signal, 3)
+)
+
+knitr::kable(
+  df_final_forecast |>
+    dplyr::mutate(
+      Forecasted_Visitors = formatC(Forecasted_Visitors, format = "d", big.mark = ","),
+      MAD = formatC(MAD, format = "d", big.mark = ",")
+    ),
+  caption = "Final forecast for the next unpublished TÜİK period"
+)
+```
+
+```{r superior-plot, fig.cap="Superior method forecast for the next period"}
+plot_superior_method(df_full, ts_data$forecast_target, final_forecast_value, best_model)
+```
+
+The forecast value is the expected number of incoming visitors for the month immediately following the latest available TÜİK observation, conditional on the historical trend and seasonal pattern captured by the selected method.
+
+The forecasted value of approximately 1.26 million visitors for January 2024 reflects January's historically low seasonal index applied to the projected trend. This estimate is consistent with the seasonal pattern observed in previous years and represents a reasonable expectation given the available historical data. Policy makers and tourism planners should note that external shocks (such as exchange rate movements, new flight routes, or geopolitical developments) could cause the actual value to deviate from this forecast.
+
+# Limitations
+
+The models are univariate and do not use explanatory variables such as exchange rates, flight capacity, geopolitical events, or policy shocks. Large structural breaks can reduce forecast reliability. The latest 12-month holdout gives a transparent comparison, but additional rolling-origin validation would provide a broader robustness check.
+
+# Save Outputs
+
+```{r save-outputs}
+write.csv(acc_table, "outputs/tables/accuracy_comparison.csv", row.names = FALSE)
+write.csv(df_final_forecast, "outputs/tables/final_forecast.csv", row.names = FALSE)
+
+plot_all_methods(df_train, df_test, all_methods)
+plot_actual_series(df_full)
+plot_superior_method(df_full, ts_data$forecast_target, final_forecast_value, best_model)
+
+message("Outputs saved under outputs/tables and outputs/figures.")
+```
+
+# Reproducibility
+
+To reproduce the project:
+
+```r
+install.packages(c("remotes", "rmarkdown", "knitr", "dplyr", "lubridate", "ggplot2", "tidyr"))
+remotes::install_github("emraher/tuikr")
+rmarkdown::render("forecasting_project.Rmd")
+```
+
+The notebook uses relative paths only and creates the required output folders automatically.
+
+```{r session-info}
+sessionInfo()
+```

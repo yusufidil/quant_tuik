@@ -1,0 +1,23 @@
+# R-specific files
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+*.Rproj
+
+# renv package cache (library is local, lock file is tracked)
+renv/library/
+renv/sandbox/
+renv/staging/
+renv/local/
+renv/cellar/
+renv/python/
+
+# macOS files
+.DS_Store
+
+# Temporary outputs/logs
+*.log
+*.tmp
+fix_sass_install.sh
+R-Based Forecasting Project Using TÜİK Data.pdf
