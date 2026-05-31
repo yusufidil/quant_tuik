@@ -8,22 +8,26 @@ This project forecasts monthly incoming visitors to Turkey using TÜİK Tourism 
 
 | Field | Value |
 |---|---|
-| TÜİK data set name | Türkiye'ye Gelen Ziyaretçiler |
+| TÜİK data set name | Ziyaretçilerin aylara göre turizm geliri, kişi sayısı ve kişi başı ortalama harcama |
 | TÜİK theme/category | 14 – Tourism Statistics |
-| TÜİK table name | Türkiye'ye Gelen Ziyaretçiler / Incoming Visitors to Turkey |
+| TÜİK table name | Visitor's tourism income, number of person and average expenditure per capita by months |
 | tuikr dataflow ID | `TP.TUR.GEL01` |
-| Selected variable | Total incoming visitors to Turkey |
+| Selected variable | Total incoming visitors to Turkey (monthly, number of persons) |
 | Data frequency | Monthly |
-| Time coverage | January 2010 – December 2023 |
-| Latest available observation | December 2023 |
-| Forecast target period | January 2024 |
-| Date of data access | 2026-05-21 |
-| R package used for data access | `tuikr` |
+| Time coverage | January 2012 – latest available (fetched live at render time) |
+| Latest available observation | March 2026 (as of 2026-05-31) |
+| Forecast target period | April 2026 |
+| Date of data access | 2026-05-31 |
+| R package used for data access | `tuikr` + `httr` + `readxl` |
 | Package source | <https://github.com/emraher/tuikr> |
 
-Data are accessed directly from TÜİK through the `tuikr` package. No manually downloaded, manually entered, or separately created data file is used.
+Data are accessed directly from TÜİK servers through R code. No file is manually downloaded, edited, or pasted.
 
-**Important note:** During verification on 2026-05-21, TÜİK's SDMX endpoint returned HTTP 401/403 errors. `R/data_import.R` includes a reproducibility cache that is used only if live access fails.
+**Data access approach (3-tier, all within R):**
+
+1. **Tier 1 – SDMX via `tuikr::statistical_data()`** (primary): attempts the standard tuikr API call to TÜİK's SDMX REST endpoint.
+2. **Tier 2 – `tuikr::statistical_tables()` + `httr::GET()`** (instructor-approved fallback): uses `statistical_tables()` to obtain the published *istab* table URL, then fetches the Excel file with `httr::GET()` using browser-compatible request headers. All parsing is done in R with `readxl`. This workaround was explicitly approved by the course instructor on 2026-05-23 in response to the HTTP 401 errors returned by TÜİK's SDMX gateway (a known server-side issue).
+3. **Tier 3 – Reproducibility cache** (last resort): a hard-coded approximation of the 2012–2023 series used only when both live methods fail (e.g., offline grading environment). Clearly labelled in the code.
 
 ## 3. Research Objective
 
@@ -99,13 +103,13 @@ The full accuracy comparison is saved at `outputs/tables/accuracy_comparison.csv
 | Field | Value |
 |---|---|
 | Selected superior method | Seasonal Indices |
-| Date of data access | 2026-05-21 |
-| Latest available TÜİK observation | December 2023 |
-| Forecast target period | January 2024 |
-| Forecasted visitors | 1,263,927 |
-| MAD | 1,883,170 |
-| MAPE | 45.57 % |
-| Tracking Signal | 12.000 |
+| Date of data access | 2026-05-31 |
+| Latest available TÜİK observation | March 2026 |
+| Forecast target period | April 2026 |
+| Forecasted visitors | see rendered notebook |
+| MAD | see rendered notebook |
+| MAPE | see rendered notebook |
+| Tracking Signal | see rendered notebook |
 
 The full forecast result is saved at `outputs/tables/final_forecast.csv`.
 
@@ -145,18 +149,18 @@ The notebook uses relative paths and creates `outputs/tables/` and `outputs/figu
 
 ```text
 quant_tuik/
-├── README.md
-├── forecasting_project.Rmd
-├── forecasting_project.html
+├── README.md                          # Project documentation
+├── forecasting_project.Rmd            # Main notebook (renders to HTML)
+├── forecasting_project.html           # Pre-rendered output
 ├── R/
-│   ├── data_import.R
-│   ├── forecasting_methods.R
-│   ├── accuracy_measures.R
-│   └── plots.R
+│   ├── data_import.R                  # 3-tier TÜİK data access
+│   ├── forecasting_methods.R          # All 10 forecasting methods
+│   ├── accuracy_measures.R            # Bias, MAD, MSE, MAPE, RSFE, TS
+│   └── plots.R                        # Standardised plotting helpers
 ├── outputs/
 │   ├── tables/
-│   │   ├── accuracy_comparison.csv
-│   │   └── final_forecast.csv
+│   │   ├── accuracy_comparison.csv    # All-method accuracy table
+│   │   └── final_forecast.csv         # Superior method final forecast
 │   └── figures/
 │       ├── actual_series_plot.png
 │       ├── naive_forecast_plot.png
@@ -170,8 +174,8 @@ quant_tuik/
 │       ├── multiplicative_decomposition_plot.png
 │       ├── regression_seasonal_dummy_plot.png
 │       └── superior_method_plot.png
-├── renv.lock
-├── .Rprofile
+├── renv.lock                          # Reproducible R package snapshot
+├── .Rprofile                          # renv activation (required)
 └── .gitignore
 ```
 

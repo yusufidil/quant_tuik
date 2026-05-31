@@ -52,7 +52,13 @@ data.frame(
   knitr::kable(caption = "Selected TÜİK data source")
 ```
 
-Data are accessed directly from TÜİK through `tuikr`; no manually downloaded Excel, CSV, copied, pasted, or edited data file is used. The notebook performs all filtering, period parsing, numeric conversion, ordering, duplicate-period aggregation, and time-series conversion in reproducible R code.
+Data are accessed directly from TÜİK servers through R code; no file is manually downloaded, edited, or pasted. The notebook uses a three-tier access strategy:
+
+1. **Tier 1 – SDMX** via `tuikr::statistical_data()` (standard tuikr API).
+2. **Tier 2 – `tuikr::statistical_tables()` + `httr::GET()`** – instructor-approved fallback for the HTTP 401 SDMX issue. `statistical_tables()` retrieves the published *istab* table URL; `httr::GET()` fetches the Excel file from TÜİK's veriportali server with browser-compatible headers; `readxl` parses it. All steps occur within R.
+3. **Tier 3 – Reproducibility cache** – used only if both live methods fail (offline environments).
+
+All data filtering, period parsing, numeric conversion, ordering, and time-series structuring are performed in reproducible R code inside `R/data_import.R`.
 
 ```{r fetch-data}
 # Fetch the latest data available through tuikr and clean it for forecasting.
